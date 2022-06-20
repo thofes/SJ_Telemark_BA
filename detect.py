@@ -28,11 +28,14 @@ import argparse
 import os
 import sys
 from pathlib import Path
+import json
 
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
 
+
+#print("START")
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
@@ -40,7 +43,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.common import DetectMultiBackend
-from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from utils.general import (LOGGER, check_file, check_img_size, check_imshow, check_requirements, colorstr,
                            increment_path, non_max_suppression, print_args, scale_coords, strip_optimizer, xyxy2xywh)
 from utils.plots import Annotator, colors, save_one_box
@@ -52,13 +55,13 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         source=ROOT / 'data/images',  # file/dir/URL/glob, 0 for webcam
         data=ROOT / 'data/coco128.yaml',  # dataset.yaml path
         imgsz=(640, 640),  # inference size (height, width)
-        conf_thres=0.25,  # confidence threshold
+        conf_thres=0,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
         max_det=1000,  # maximum detections per image
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         view_img=False,  # show results
         save_txt=False,  # save results to *.txt
-        save_conf=False,  # save confidences in --save-txt labels
+        save_conf=True,  # save confidences in --save-txt labels
         save_crop=False,  # save cropped prediction boxes
         nosave=False,  # do not save images/videos
         classes=None,  # filter by class: --class 0, or --class 0 2 3
@@ -67,14 +70,16 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         visualize=False,  # visualize features
         update=False,  # update all models
         project=ROOT / 'runs/detect',  # save results to project/name
-        name='exp',  # save results to project/name
-        exist_ok=False,  # existing project/name ok, do not increment
+        name='yolo',  # save results to project/name
+        exist_ok=True,  # existing project/name ok, do not increment
         line_thickness=3,  # bounding box thickness (pixels)
         hide_labels=False,  # hide labels
         hide_conf=False,  # hide confidences
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         ):
+
+    #print("START_DEF")    
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
@@ -85,7 +90,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    (save_dir if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Load model
     device = select_device(device)
@@ -99,20 +104,37 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         model.model.half() if half else model.model.float()
 
     # Dataloader
-    if webcam:
-        view_img = check_imshow()
-        cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt)
-        bs = len(dataset)  # batch_size
-    else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
-        bs = 1  # batch_size
+
+    dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
+    bs = 1  # batch_size
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
-    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz), half=half)  # warmup
+    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
     dt, seen = [0.0, 0.0, 0.0], 0
-    for path, im, im0s, vid_cap, s in dataset:
+  
+    list_line = []
+    list_x = []
+    list_y = []
+
+    new_xywh = []
+    new_xyxy = []
+    new_imc = []
+    new_save_path = []
+
+    data = {
+      "x_center":[],
+      "y_center":[],
+      "x1":[],
+      "x2":[],
+      "y1":[],
+      "y2":[],
+      "conf":[],
+      "det":[]
+    }   
+    
+    for path, im, im0s, vid_cap, s in dataset: # jedes Bild im Ordner 21
+        #print("FOR1")
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
         im = im.half() if half else im.float()  # uint8 to fp16/32
@@ -134,80 +156,183 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
         # Second-stage classifier (optional)
         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
-
+        
+        
         # Process predictions
-        for i, det in enumerate(pred):  # per image
+        detections = 0
+        for i, det in enumerate(pred):  # per image 21
+            #print("FOR2")
             seen += 1
-            if webcam:  # batch_size >= 1
-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
-                s += f'{i}: '
-            else:
-                p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
+            p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # im.jpg
-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
-            s += '%gx%g ' % im.shape[2:]  # print string
+            new_save_path.append(save_path)
+            txt_path = str(save_dir) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
+            s += '%gx%g ' % im.shape[2:]  # #print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             imc = im0.copy() if save_crop else im0  # for save_crop
+            new_imc.append(imc) #21 Bilder am Ende in der Liste
+            #data["imc"].append(imc)
             annotator = Annotator(im0, line_width=line_thickness, example=str(names))
-            if len(det):
+            #print("DET: " , len(det))
+            if len(det) == False:
+                data["det"].append(0)
+                #data["x1"].append(0)
+                #data["y1"].append(0)
+                #data["x2"].append(0)
+                #data["y2"].append(0)
+                #data["x_center"].append(0)
+                #data["y_center"].append(0)
+            if len(det): # wenn Detections vorhanden
+                
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
 
-                # Print results
+                # #print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
-
+                    
+                
                 # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-                    if save_img or save_crop or view_img:  # Add bbox to image
-                        c = int(cls)  # integer class
-                        label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
-                        annotator.box_label(xyxy, label, color=colors(c, True))
-                        if save_crop:
-                            print("Confidence: ", conf)
-                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                list_xyxy_per_det = []
+                list_xywh_per_det = []
+                list_y_per_det = []
+                list_y_abs_per_det = []
+                list_x_per_det = []
+                
+                list_line_per_det = []
+
+                index_per_det = 0
+                hight, width = im0.shape[0:2]
+                center_x = width/2
+                center_y = hight/2
+                #print("width: ",width)
+                #print("hifht: ", hight)
+
+                for *xyxy, conf, cls in reversed(det): #predictions per image 
+                    #print("FOR3")
+                    
+                    #print("index_per_det: ", index_per_det)
+                    #print("xyxytosave: ", xyxy)
+
+                    
+                    #if save_txt: #and conf > 0.35:  # Write to file
+                    #print("SAVETXT")
+                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                    xywh[0] = xywh[0]*hight
+                    xywh[1] = xywh[1]*width 
+ 
+                    if cls == 0: #only person
+                        list_xyxy_per_det.append(xyxy)
+                        list_xywh_per_det.append(xywh)
+                        #print("BP1")
+                        line = (*xywh, conf)  # label format
+                        #line = (*xyxy, conf)
+                        list_line_per_det.append(line)
+                        list_line.append(line)
+                        data["x1"].append(float(xyxy[0]))
+                        data["y1"].append(float(xyxy[1]))
+                        data["x2"].append(float(xyxy[2]))
+                        data["y2"].append(float(xyxy[3]))
+                        data["x_center"].append(float(xywh[0]))
+                        data["y_center"].append(float(xywh[1]))
+                        data["conf"].append(float(conf))
+                        detections = detections+1
+
+                        
+                        
+                        #print("y: ", xywh[1])
+                        #print("yabs: ", abs(xywh[1]*hight-center_y))
+                        #list_y_abs_per_det.append(abs(xywh[1]*hight-center_y))
+                        #list_x_per_det.append(xywh[0])
+                        #list_y_per_det.append(xywh[1])
+                        
+                        
+                        #print(line)
+
+                        index_per_det = index_per_det+1
+                        
+                    elif len(det) == 1 and cls != 0:
+                        index_per_det = index_per_det+1
+                        #data["x1"].append(0)
+                        #data["y1"].append(0)
+                        #data["x2"].append(0)
+                        #data["y2"].append(0)
+                        #data["x_center"].append(0)
+                        #data["y_center"].append(0)                          
+
+                    
+                    else:
+                        index_per_det = index_per_det+1
+                        crop = 0                         
+                    
+                    if index_per_det == len(det):
+                            #print("last")
+                            #closest = min(list_y_abs_per_det)
+                            #print(closest)
+                            #min_index = list_y_abs_per_det.index(closest)
+                            #list_line.append(list_line_per_det[min_index])
+                            #list_x.append(list_x_per_det[min_index])
+                            #list_y.append(list_y_per_det[min_index])
+                            #new_xyxy.append(list_xyxy_per_det[min_index])
+                            #new_xywh.append(list_xywh_per_det[min_index])
+                        data["det"].append(detections)
+                            
+                    c = int(cls)  # integer class
+                    label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                    annotator.box_label(xyxy, label, color=colors(c, True))                           
+            #cv2.imwrite(save_path, im0)  # speichert das gesamte Bild mit detections               
+    #print("data ", save_dir)
+    #fill_det = 21 - len(data["det"])
+    #for i in range(fill_det):
+        #data["det"].append(0)
+    with open(str(save_dir) + "/predictions.json", "w") as fp:
+        json.dump(data, fp, indent=4)                     
+    """
+    for i, im in enumerate(new_imc):
+        #print("BP3")
+        ##print("Confidence: ", conf)
+        ##print("NAMESC: ", names[c])
+        #if names[c] == 'person':
+            ##print("BP5")
+            ##print("XYXY to crop: ", xyxy)
+        #save_one_box(xyxy, imc, file=save_dir / f'{p.stem}.jpg', BGR=True)
+        x1 = int(new_xyxy[i][0])-50
+        if x1 < 0:
+            x1 = 0
+        x2 = int(new_xyxy[i][2])+50
+        if x2 > width:
+            x2 = width
+        y1 = int(new_xyxy[i][1])-50
+        if y1 < 0:
+            y1 = 0
+        y2 = int(new_xyxy[i][3])+50
+        if y2 > hight:
+            y2 = hight
+        
+        crop = im[y1:y2, x1:x2] 
+        save_dir.parent.mkdir(parents=True, exist_ok=True)  # make directory
+        #cv2.imwrite(new_save_path[i], crop) # speicher nur den zugeschnittenen Springer
+        print(new_save_path[i])
+        #print("xyxy: ", new_xyxy[i])
+        #print("x: ", new_xyxy[i][0])
+        #print("im: ", im)                        
+    """   
+ 
 
 
+    #print("FINALE Liste: ", list_line)
+    path_txt = txt_path + '/' + 'predictions.txt'
+    with open(path_txt, 'a') as writefile:
+        for line in list_line:
+            #print(line)
+            writefile.write(('%g ' * len(line)).rstrip() % line  +'\n')
+           
 
-
-            # Stream results
-            im0 = annotator.result()
-            if view_img:
-                cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
-
-            # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
-                    if vid_path[i] != save_path:  # new video
-                        vid_path[i] = save_path
-                        if isinstance(vid_writer[i], cv2.VideoWriter):
-                            vid_writer[i].release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
-                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    vid_writer[i].write(im0)
-
-        # Print time (inference-only)
-        LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
-
-    # Print results
+    # #print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if save_txt or save_img:
@@ -247,7 +372,7 @@ def parse_opt():
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
-    print_args(FILE.stem, opt)
+    #print_args(FILE.stem, opt)
     return opt
 
 
